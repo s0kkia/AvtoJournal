@@ -1,6 +1,6 @@
 {
-  "version": "2.3",
-  "versionCode": 14,
-  "url": "https://github.com/s0kkia/AvtoJournal/releases/download/v2.3/AvtoJournal-v2.3-ota.apk",
-  "changelog": "Добавлена кнопка «Проверить обновление» в настройках."
+  "version": "2.4",
+  "versionCode": 15,
+  "url": "https://github.com/s0kkia/AvtoJournal/releases/download/v2.4/AvtoJournal-v2.4-ota.apk",
+  "changelog": "История ТО отдельной страницей: в карточке авто — последние 5 записей и ссылка «Все». Расширены справочники работ, названия ТО и регламента синхронизированы, в регламент добавлена стоимость работы."
 }
