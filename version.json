@@ -1,7 +1,7 @@
 {
-  "version": "2.4",
-  "versionCode": 15,
-  "url": "https://github.com/s0kkia/AvtoJournal/releases/download/v2.4/AvtoJournal-v2.4-ota.apk",
-  "sha256": "70a7cc02507fd2dcf1ae0415202fe4f1fa99adbee0b1b63a6f28f81268f53272",
-  "changelog": "История ТО: кнопка «Вся история» в карточке авто. OTA-обновление теперь показывает прогресс скачивания и само открывает установщик."
+  "version": "2.5",
+  "versionCode": 16,
+  "url": "https://github.com/s0kkia/AvtoJournal/releases/download/v2.5/AvtoJournal-ota.apk",
+  "sha256": "485f0534f77eab5259d29b569bd63b583e5b4748943c65925e2ecb5df32fb037",
+  "changelog": "Кнопки «Все» в карточке авто, исправлен возврат из истории ТО в карточку авто, удалены передний/задний дифференциал из категории трансмиссии, OTA-обновление с прогрессом и авто-открытием установщика, автор — Павлов Роман."
 }
