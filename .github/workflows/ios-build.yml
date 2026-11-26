@@ -15,7 +15,7 @@ on:
 jobs:
   build:
     name: Build (simulator)
-    runs-on: macos-13
+    runs-on: macos-15
     defaults:
       run:
         working-directory: ios
