@@ -1,0 +1,60 @@
+name: iOS build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-build.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (simulator)
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: ios
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build for iOS Simulator (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AvtoJournal.xcodeproj \
+            -scheme AvtoJournal \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package .app
+        run: |
+          mkdir -p artifacts
+          cp -R build/Build/Products/Debug-iphonesimulator/AvtoJournal.app artifacts/
+          cd artifacts
+          zip -r AvtoJournal-ios-simulator.zip AvtoJournal.app
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AvtoJournal-ios-simulator
+          path: ios/artifacts/AvtoJournal-ios-simulator.zip
+          if-no-files-found: error
