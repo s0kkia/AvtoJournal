@@ -70,7 +70,7 @@
   "version": "2.6",
   "versionCode": 17,
   "url": "https://github.com/s0kkia/AvtoJournal/releases/download/v2.6/AvtoJournal-ota.apk",
-  "sha256": "7e6d61a03f7fcdd2a9a92c76ae0414a3351fc99905fcfaba97285bdf94fffe4e",
+  "sha256": "68839b3b84c0102f86c21889f3442489b64fa0cb554cd306156fd03015bbfd90",
   "changelog": "Плашка «План ремонта», сортировка ТО по частоте, обновление пробега в один тап, напоминания о ТО и документах, офлайн-расшифровка P-кодов, отправка истории и PDF."
 }
 ```
