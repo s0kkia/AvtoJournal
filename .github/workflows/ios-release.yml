@@ -1,0 +1,260 @@
+name: iOS signed release
+
+# Builds a SIGNED, installable .ipa, generates an OTA manifest and
+# publishes everything to a GitHub Release.
+#
+# Required repository secrets:
+#   APPLE_CERT_P12_BASE64        base64 of the signing certificate (.p12)
+#   APPLE_CERT_PASSWORD          password of the .p12
+#   APPLE_PROVISION_PROFILE_BASE64  base64 of the .mobileprovision
+#   APPLE_TEAM_ID                Apple Developer Team ID
+# Optional secrets:
+#   CODE_SIGN_IDENTITY           default: "Apple Distribution"
+#   KEYCHAIN_PASSWORD            default: random
+#
+# The export method (development / ad-hoc / enterprise / app-store) is
+# auto-detected from the provisioning profile.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Marketing version (e.g. 2.5)'
+        required: true
+        default: '2.5'
+      create_release:
+        description: 'Publish a GitHub Release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  signed:
+    name: Build signed .ipa
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: ios
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        env:
+          CERT: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          PASS: ${{ secrets.APPLE_CERT_PASSWORD }}
+          PROFILE: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=""
+          [ -n "$CERT" ] || missing="$missing APPLE_CERT_P12_BASE64"
+          [ -n "$PASS" ] || missing="$missing APPLE_CERT_PASSWORD"
+          [ -n "$PROFILE" ] || missing="$missing APPLE_PROVISION_PROFILE_BASE64"
+          [ -n "$TEAM" ] || missing="$missing APPLE_TEAM_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets:$missing"
+            exit 1
+          fi
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Import signing certificate
+        env:
+          CERT_B64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          CERT_PASS: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASS: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$CERT_B64" | base64 -D > "$CERT_PATH"
+          KC_PASS="${KEYCHAIN_PASS:-$(openssl rand -hex 16)}"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "$CERT_PASS" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KEYCHAIN"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Install provisioning profile
+        env:
+          PROFILE_B64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          echo "$PROFILE_B64" | base64 -D > "$PP_PATH"
+          security cms -D -i "$PP_PATH" > "$RUNNER_TEMP/profile.plist"
+          PP_UUID=$(plutil -extract UUID raw "$RUNNER_TEMP/profile.plist")
+          PP_NAME=$(plutil -extract Name raw "$RUNNER_TEMP/profile.plist")
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PP_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PP_UUID.mobileprovision"
+          echo "PP_NAME=$PP_NAME" >> "$GITHUB_ENV"
+          echo "PP_UUID=$PP_UUID" >> "$GITHUB_ENV"
+
+      - name: Detect export method
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/profile.plist"
+          if [ "$(plutil -extract 'Entitlements.get-task-allow' raw "$P" 2>/dev/null || echo false)" = "true" ]; then
+            METHOD=development
+          elif [ "$(plutil -extract ProvisionsAllDevices raw "$P" 2>/dev/null || echo false)" = "true" ]; then
+            METHOD=enterprise
+          elif plutil -extract ProvisionedDevices raw "$P" >/dev/null 2>&1; then
+            METHOD=ad-hoc
+          else
+            METHOD=app-store
+          fi
+          echo "EXPORT_METHOD=$METHOD" >> "$GITHUB_ENV"
+          echo "Detected export method: $METHOD"
+
+      - name: Archive
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          IDENTITY: ${{ secrets.CODE_SIGN_IDENTITY }}
+        run: |
+          set -o pipefail
+          IDENTITY="${IDENTITY:-Apple Distribution}"
+          xcodebuild \
+            -project AvtoJournal.xcodeproj \
+            -scheme AvtoJournal \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/AvtoJournal.xcarchive" \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="$TEAM" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$IDENTITY" \
+            PROVISIONING_PROFILE_SPECIFIER="$PP_NAME" \
+            archive
+
+      - name: Export .ipa
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/export"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>teamID</key><string>${TEAM}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>ru.freedgi.autojournal</key><string>${PP_NAME}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/AvtoJournal.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates
+          ls -la "$RUNNER_TEMP/export"
+
+      - name: Verify signature
+        run: |
+          set -euo pipefail
+          IPA=$(find "$RUNNER_TEMP/export" -maxdepth 1 -name '*.ipa' | head -1)
+          [ -n "$IPA" ] || { echo "::error::No .ipa produced"; exit 1; }
+          cp "$IPA" "$RUNNER_TEMP/AvtoJournal.ipa"
+          rm -rf "$RUNNER_TEMP/verify" && mkdir -p "$RUNNER_TEMP/verify"
+          unzip -q "$RUNNER_TEMP/AvtoJournal.ipa" -d "$RUNNER_TEMP/verify"
+          codesign -dv --verbose=4 "$RUNNER_TEMP/verify/Payload/AvtoJournal.app" 2>&1 | sed -n '1,12p'
+          codesign --verify --deep --strict "$RUNNER_TEMP/verify/Payload/AvtoJournal.app"
+          shasum -a 256 "$RUNNER_TEMP/AvtoJournal.ipa" | tee "$RUNNER_TEMP/AvtoJournal.ipa.sha256"
+
+      - name: Generate OTA manifest and install page
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="ios-v${VERSION}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          IPA_URL="${BASE}/AvtoJournal.ipa"
+          MANIFEST_URL="${BASE}/manifest.plist"
+
+          cat > "$RUNNER_TEMP/manifest.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>assets</key>
+                <array>
+                  <dict>
+                    <key>kind</key><string>software-package</string>
+                    <key>url</key><string>${IPA_URL}</string>
+                  </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                  <key>bundle-identifier</key><string>ru.freedgi.autojournal</string>
+                  <key>bundle-version</key><string>${VERSION}</string>
+                  <key>kind</key><string>software</string>
+                  <key>title</key><string>АвтоЖурнал</string>
+                </dict>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          EOF
+
+          cat > "$RUNNER_TEMP/install.html" <<EOF
+          <!doctype html>
+          <html lang="ru"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Установка АвтоЖурнал</title>
+          <style>body{font-family:-apple-system,system-ui,sans-serif;max-width:520px;margin:48px auto;padding:0 20px;color:#111}
+          a.btn{display:block;text-align:center;background:#0a84ff;color:#fff;text-decoration:none;padding:16px;border-radius:12px;font-size:18px;font-weight:600}
+          p{line-height:1.5;color:#444}</style></head>
+          <body>
+          <h1>АвтоЖурнал ${VERSION}</h1>
+          <p>Нажмите кнопку ниже на iPhone (Safari) — приложение установится напрямую.</p>
+          <a class="btn" href="itms-services://?action=download-manifest&amp;url=${MANIFEST_URL}">Установить на iPhone</a>
+          <p>Если установка не начинается, убедитесь, что устройство добавлено в provisioning profile (для ad-hoc) или используется enterprise-сертификат.</p>
+          </body></html>
+          EOF
+          echo "MANIFEST_URL=$MANIFEST_URL" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        if: ${{ github.event.inputs.create_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="ios-v${VERSION}"
+          NOTES="## АвтоЖурнал ${VERSION} (iOS, подписанная сборка)
+
+          Установка напрямую с iPhone: откройте \`install.html\` в Safari и нажмите «Установить», либо используйте OTA-ссылку из описания.
+
+          - bundle: \`ru.freedgi.autojournal\`
+          - версия: ${VERSION}
+          - подпись: ${EXPORT_METHOD}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP/AvtoJournal.ipa" "$RUNNER_TEMP/AvtoJournal.ipa.sha256" "$RUNNER_TEMP/manifest.plist" "$RUNNER_TEMP/install.html" --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$RUNNER_TEMP/AvtoJournal.ipa" "$RUNNER_TEMP/AvtoJournal.ipa.sha256" "$RUNNER_TEMP/manifest.plist" "$RUNNER_TEMP/install.html" --title "АвтоЖурнал iOS ${VERSION} (signed)" --notes "$NOTES" --prerelease
+          fi
